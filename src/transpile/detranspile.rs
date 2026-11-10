@@ -1415,6 +1415,11 @@ fn quote(s: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\t' => out.push_str("\\t"),
             '\r' => out.push_str("\\r"),
+            // remaining control bytes: \x## (exactly two hex digits, so a
+            // following literal digit can never merge into the escape)
+            c if (c as u32) < 0x20 || (c as u32) == 0x7f => {
+                out.push_str(&format!("\\x{:02x}", c as u32))
+            }
             _ => out.push(c),
         }
     }

@@ -2,7 +2,7 @@
 // The page itself is fully self-contained (engine included), so caching one
 // document is all that is needed. Bump the version below whenever the page
 // content changes, so redeployed sites replace the old cached copy.
-const CACHE = 'vs4-offline-v9';
+const CACHE = 'vs4-offline-v10';
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(['./'])));
   self.skipWaiting();

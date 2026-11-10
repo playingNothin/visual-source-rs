@@ -162,14 +162,70 @@ pub fn lex_with_comments(src: &str) -> Result<(Vec<Token>, Vec<CapturedComment>)
             let mut s = String::new();
             while i < n && b[i] != quote {
                 if b[i] == '\\' && i + 1 < n {
+                    // Luau escape set: named (\a \b \f \n \r \t \v \\ \" \'),
+                    // \ddd (1-3 digits), \x##, \u{...}, \z (skip whitespace),
+                    // backslash-newline continuation. Unknown escapes drop the
+                    // backslash and keep the char (Lua default). Each arm
+                    // advances i itself - the widths differ.
                     i += 1; col += 1;
                     let e = b[i];
-                    s.push(match e {
-                        'n' => '\n', 't' => '\t', 'r' => '\r', '\\' => '\\',
-                        '"' => '"', '\'' => '\'',
-                        other => other,
-                    });
-                    i += 1; col += 1;
+                    match e {
+                        'n' => { s.push('\n'); i += 1; col += 1; }
+                        't' => { s.push('\t'); i += 1; col += 1; }
+                        'r' => { s.push('\r'); i += 1; col += 1; }
+                        'a' => { s.push('\u{7}'); i += 1; col += 1; }
+                        'b' => { s.push('\u{8}'); i += 1; col += 1; }
+                        'f' => { s.push('\u{c}'); i += 1; col += 1; }
+                        'v' => { s.push('\u{b}'); i += 1; col += 1; }
+                        '\\' | '"' | '\'' => { s.push(e); i += 1; col += 1; }
+                        'x' => {
+                            if i + 2 < n && (b[i + 1] as char).is_ascii_hexdigit()
+                                && (b[i + 2] as char).is_ascii_hexdigit()
+                            {
+                                let hv = ((b[i + 1] as char).to_digit(16).unwrap() << 4)
+                                    | (b[i + 2] as char).to_digit(16).unwrap();
+                                s.push(char::from_u32(hv).unwrap_or('\u{fffd}'));
+                                i += 3; col += 3;
+                            } else {
+                                s.push('x'); i += 1; col += 1;
+                            }
+                        }
+                        '0'..='9' => {
+                            let mut v: u32 = 0;
+                            let mut cnt = 0;
+                            while cnt < 3 && i < n && b[i].is_ascii_digit() {
+                                v = v * 10 + b[i].to_digit(10).unwrap();
+                                cnt += 1; i += 1; col += 1;
+                            }
+                            s.push(char::from_u32(v).unwrap_or('\u{fffd}'));
+                        }
+                        'u' if i + 1 < n && b[i + 1] == '{' => {
+                            let mut j = i + 2;
+                            let mut v: u32 = 0;
+                            while j < n && (b[j] as char).is_ascii_hexdigit() {
+                                v = v * 16 + (b[j] as char).to_digit(16).unwrap();
+                                j += 1;
+                            }
+                            if j < n && b[j] == '}' && j > i + 2 {
+                                if let Some(ch) = char::from_u32(v) { s.push(ch); }
+                                let adv = j + 1 - i;
+                                i = j + 1; col += adv;
+                            } else {
+                                s.push('u'); i += 1; col += 1;
+                            }
+                        }
+                        'z' => {
+                            i += 1;
+                            while i < n
+                                && (b[i] == ' ' || b[i] == '\t' || b[i] == '\n' || b[i] == '\r')
+                            {
+                                if b[i] == '\n' { line += 1; col = 1; } else { col += 1; }
+                                i += 1;
+                            }
+                        }
+                        '\n' => { s.push('\n'); i += 1; line += 1; col = 1; }
+                        other => { s.push(other); i += 1; col += 1; }
+                    }
                 } else {
                     if b[i] == '\n' { line += 1; col = 1; } else { col += 1; }
                     s.push(b[i]);

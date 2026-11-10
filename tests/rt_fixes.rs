@@ -85,6 +85,37 @@ fn long_bracket_strings_parse() {
 }
 
 #[test]
+fn decimal_and_hex_escapes_evaluate() {
+    // \ddd (up to 3 digits) and \x## must become the actual characters -
+    // previously the backslash was silently dropped ("65"/"x42" stayed text)
+    let luau = back("local s = \"hex \\65 \\x42 end\"\nprint(s)");
+    assert!(luau.contains("hex A B end"), "escape not evaluated:\n{}", luau);
+    assert!(!luau.contains("65"), "decimal escape left as text:\n{}", luau);
+}
+
+#[test]
+fn named_escapes_evaluate() {
+    // \a \b \f \v re-emit as \x## (two hex digits, digit-safe); \0 stays NUL
+    let luau = back("local s = \"a\\a b\\b c\\f d\\v e\\0\"\nprint(s)");
+    assert!(luau.contains("\\x07"), "bell escape lost:\n{}", luau);
+    assert!(luau.contains("\\x08"), "backspace escape lost:\n{}", luau);
+    assert!(luau.contains("\\x0c"), "formfeed escape lost:\n{}", luau);
+    assert!(luau.contains("\\x0b"), "vtab escape lost:\n{}", luau);
+    assert!(luau.contains("\\x00"), "NUL escape lost:\n{}", luau);
+}
+
+#[test]
+fn unicode_and_z_escapes() {
+    // \u{...} becomes the UTF-8 codepoint; \z skips following whitespace
+    let luau = back("local s = \"u\\u{48}i\\u{1F600}\"\nprint(s)");
+    assert!(luau.contains("uHi"), "\\u codepoint not evaluated:\n{}", luau);
+    assert!(luau.contains('\u{1F600}'), "astral codepoint lost:\n{}", luau);
+    let luau2 = back("local s = \"a\\z\n     b\"\nprint(s)");
+    // \z skips ALL following whitespace (newline + indent), so "a" and "b" join
+    assert!(luau2.contains("\"ab\""), "\\z whitespace not skipped:\n{}", luau2);
+}
+
+#[test]
 fn string_methods_route_to_rs_blocks() {
     let luau = back("local s = \"abc\"\nprint(s:upper(), s:sub(2, 3), (#s))");
     assert!(luau.contains(":upper()"), "s:upper() not routed:\n{}", luau);
