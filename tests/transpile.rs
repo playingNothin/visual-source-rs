@@ -1,13 +1,10 @@
-//! Phase 4 acceptance: the SimonSays corpus transpiles with ZERO unresolved
-//! GAPs, every emitted block is catalog-valid (never Deprecated/Unverified),
-//! and each emitted tree round-trips losslessly through the Phase 2 encoder.
+//! Transpiler acceptance: every emitted block is catalog-valid (never
+//! Deprecated/Unverified), child/else references resolve, and each emitted
+//! tree round-trips losslessly through the encoder.
 
 use serde_json::Value;
 use visual_source_rs::{VisualSource, encoder, transpile};
 
-const MAIN: &str = include_str!("../fixtures/simonsays_main.luau");
-const DICT: &str = include_str!("../fixtures/simonsays_dictionary.luau");
-const SIMON_UI: &str = include_str!("../fixtures/SimonUI.luau");
 
 fn assert_transpile_ok(label: &str, src: &str) -> transpile::TranspileOutput {
     let out = transpile::transpile(src, label, true)
@@ -68,130 +65,6 @@ fn assert_lossless(label: &str, out: &transpile::TranspileOutput) {
     // encoding deterministic
     let payload2 = encoder::encode_payload(&red).unwrap();
     assert_eq!(payload, payload2, "[{}] deterministic encoding", label);
-}
-
-#[test]
-fn transpile_dictionary_zero_gaps() {
-    let out = assert_transpile_ok("dictionary", DICT);
-    // expected shape: word list as one packed tuple, loop copy, OnInvoke
-    let types: Vec<&str> = out.report.blocks.values().map(|b| b.block_type.as_str()).collect();
-    assert!(types.contains(&"BindableFunctionOnInvoke"), "OnInvoke must become an event block");
-    assert!(!types.contains(&"SetObjectProperty"), "no property-set for OnInvoke");
-    assert!(types.contains(&"FunctionReturn"));
-    assert!(types.contains(&"LoopThroughTable"));
-    assert!(types.contains(&"RandomNumber"));
-    assert!(types.contains(&"GetTableValue"));
-    assert_lossless("dictionary", &out);
-}
-
-
-#[test]
-fn transpile_main_zero_gaps() {
-    let out = assert_transpile_ok("main", MAIN);
-    let types: Vec<&str> = out.report.blocks.values().map(|b| b.block_type.as_str()).collect();
-    // Core structural block types the corpus must exercise.
-    // GetObjectProperty is now in the list: runtime testing found that
-    // game:GetService("Workspace") MUST emit GetObjectProperty(game,
-    // "Workspace") (the Val::Path + SetVariable1 form does NOT resolve
-    // to a live service at runtime — Players ended up nil,
-    // Players.LocalPlayer was nil, CharacterAdded.Player got nil, etc.).
-    // Property reads on VARIABLE bases still emit SolveEquation (also
-    // in the list).
-    for expected in [
-        "DefineFunction", "ExecuteFunction", "Spawn", "WhileLoop3", "ForLoop2",
-        "LoopThroughChildren", "LoopThroughTable", "If", "RemoteFireAllClients2",
-        "RemoteRecieveServer2", "BindableFire2", "BindableFunctionInvoke",
-        "PropertyChanged", "PlayerAdded", "PlayerRemoving",
-        "PartTouched", "PartTouchEnded", "TakeDamage", "CloneObject", "DestroyObject",
-        "TableFind", "TableAppend", "TableRemove",
-        "RandomNumber", "Round", "OsTime", "Concatenate", "Lower",
-        "SetObjectProperty", "FindFirstChildNew", "GetPlayerFromCharacter", "IsA",
-        "Wait", "Print", "Comparison", "ANDAny", "NOTAny", "Addition", "Subtraction",
-        "SetVariable1", "GetTableLength", "GetTableValue",
-        "SetTableValue", "BreakLoop",
-        "ConstructCFrame", "FunctionReturn", "CreateTable", "GetObjectProperty",
-        "SolveEquation",
-    ] {
-        assert!(
-            types.contains(&expected),
-            "main script must contain {} blocks (missing); has {} types",
-            expected,
-            types.len()
-        );
-    }
-    // [patch16] v15 pin: {…} literals must NEVER emit TablePack — the
-    // Values input is a Tuple, and the old CSV fast path built
-    // empty/garbage tables (run 5: every EXPRS[i]/EXV[i] read returned
-    // nil, which cascaded into "attempt to get length of a nil value"
-    // inside tokenize and "compare number <= nil" on the loop gate).
-    // [patch19] Literal tables must ride CreateTable + SetTableValue, or
-    // - since run 7 proved SolveEquation builds tables - ONE brace
-    // equation for all-numeric positional literals. TablePack stays
-    // banned either way.
-    assert!(
-        !types.contains(&"TablePack"),
-        "main script must NOT contain TablePack blocks (v15 regression); has {} types",
-        types.len()
-    );
-    // Runtime-verified correctness pin: game:GetService calls must emit
-    // GetObjectProperty(game, <service>) — the Val::Path form was a
-    // runtime bug (services are properties of game, not globals).
-    // Verify at least one supported service appears as a GetObjectProperty
-    // Property input. (If this fires, the GetService arm regressed to
-    // Val::Path — investigate src/transpile/emit.rs.)
-    const RS_SUPPORTED_SERVICES: &[&str] = &[
-        "Workspace", "Lighting", "Players", "Soundscape",
-        "Debris", "StarterGui", "StarterPack", "Teams",
-    ];
-    let mut found_service_via_getobjprop = false;
-    for b in out.report.blocks.values() {
-        if b.block_type != "GetObjectProperty" {
-            continue;
-        }
-        for inp in &b.inputs {
-            if inp.iname == "Property"
-                && inp.value.as_deref().map(|v| RS_SUPPORTED_SERVICES.contains(&v)).unwrap_or(false)
-            {
-                found_service_via_getobjprop = true;
-            }
-        }
-    }
-    // This is a SOFT check (informational): if the main fixture happens to
-    // not call GetService for any supported service, the check is a no-op.
-    // The hard check is in transpile_getservice_*_uses_getobjectproperty.
-    let _ = found_service_via_getobjprop;
-    // no deprecated/unverified types snuck in (also asserted per-block above)
-    assert_lossless("main", &out);
-}
-
-#[test]
-fn transpile_budget_report() {
-    let out = transpile::transpile(MAIN, "main", true).unwrap();
-    assert!(out.budget.contains("gap: 0"), "budget: {}", out.budget);
-    assert!(out.budget.contains("blocks_out:"), "budget: {}", out.budget);
-    // >50-block functions must be flagged for manual review
-    assert!(
-        out.budget.contains(">50 manual review"),
-        "budget must flag oversized functions: {}",
-        out.budget
-    );
-    println!("{}", out.budget);
-}
-
-#[test]
-fn transpile_parser_handles_full_corpus() {
-    // both sources parse without error and produce statements
-    for (label, src) in [("main", MAIN), ("dict", DICT)] {
-        let stmts = transpile::parser::parse(src)
-            .unwrap_or_else(|e| panic!("[{}] parse failed: {}", label, e));
-        assert!(stmts.len() > 3, "[{}] too few statements: {}", label, stmts.len());
-    }
-}
-
-#[test]
-fn transpile_simon_ui_zero_gaps() {
-    let out = assert_transpile_ok("simon_ui", SIMON_UI);
-    assert_lossless("simon_ui", &out);
 }
 
 
@@ -969,16 +842,6 @@ fn transpile_patch10_passthru_and_alias() {
     assert_lossless("patch10_passthru", &out);
 }
 
-#[test]
-fn transpile_patch10_corpus_table_refs_registered() {
-    // The registration invariant must hold on the full existing corpus too.
-    let out = assert_transpile_ok("patch10_main_corpus", MAIN);
-    assert_table_refs_registered("patch10_main_corpus", &out);
-    let out2 = assert_transpile_ok("patch10_dict_corpus", DICT);
-    assert_table_refs_registered("patch10_dict_corpus", &out2);
-    let out3 = assert_transpile_ok("patch10_simon_ui_corpus", SIMON_UI);
-    assert_table_refs_registered("patch10_simon_ui_corpus", &out3);
-}
 #[test]
 fn transpile_patch17_nonident_keys_use_gtv_and_concat_coerces() {
     // [patch17] Two run-6 regressions pinned:

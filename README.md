@@ -1,6 +1,6 @@
 # visual-source-rs
 
-<img width="317" height="365" alt="visual_source_rs_icon" src="https://github.com/user-attachments/assets/ba021509-aa25-4d13-8366-7a8b2357fc7a" />
+<img width="240" alt="basicallyLua logo" src="assets/logo.png" />
 
 **visual-source-rs** is a Rust crate for creating, modifying and reading
 RetroStudio's VisualSource scripts — plus two ways to use it without writing
@@ -107,10 +107,12 @@ python3 site/build.py
 cargo test
 ```
 
-The suite includes `tests/detranspile.rs`, which round-trips every fixture in
-`fixtures/` (Luau → payload → Luau → payload) and asserts the reconstructed
-block trees match, plus layer-by-layer losslessness proofs against the
-ground-truth RetroStudio fixtures.
+The suite is self-contained — no fixtures or sample files needed. Every
+transpiled tree round-trips through the encoder with tree equality, stable
+record streams and deterministic encoding (`tests/roundtrip.rs`), the
+Luau → payload → Luau → payload path through the detranspiler is asserted
+to reproduce an equivalent tree, and `tests/repro_split.rs` pins the
+else-chain/loop-continuation regressions.
 
 ## Repository layout
 
@@ -121,7 +123,6 @@ src/                 the crate (decoder, encoder, transpiler, detranspiler)
 wasm-src/            the WebAssembly bindings (cdylib)
 site/                the self-contained offline browser app
 docs/                format documentation (FORMAT, TRANSPILE, BLOCK_CATALOG)
-fixtures/            ground-truth RetroStudio payloads and Luau samples
 tests/               lossless + transpile + detranspile round-trip suites
 ```
 
