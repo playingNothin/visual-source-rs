@@ -97,7 +97,8 @@ cargo build --target wasm32-unknown-unknown --release
 To rebuild the self-contained site (inlines the wasm as base64):
 
 ```bash
-python3 ../build_site.py
+# from the repository root, after the wasm build
+python3 site/build.py
 ```
 
 ## Tests
