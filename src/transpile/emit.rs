@@ -3193,12 +3193,18 @@ impl Transpiler {
                 let base_str = match &basev {
                     Val::Var(b) => b.clone(),
                     Val::Path(p) => p.clone(),
-                    _ => "nil".into(),
+                    // constant-folded base renders as its raw Luau text;
+                    // SolveEquation evaluates it at runtime
+                    _ => self.eq_expr(base),
                 };
                 let arg_str = match &vv {
                     Val::Var(b) => b.clone(),
                     Val::Path(p) => p.clone(),
-                    _ => "nil".into(),
+                    // constant-folded arg (e.g. Vector3.new(1, 2, 3) folded to
+                    // a SetVariable1 literal) must render as its raw Luau text,
+                    // NOT the string "nil" - a nil in the equation computes
+                    // garbage at runtime
+                    _ => self.eq_expr(v),
                 };
                 let eq = format!("{}:{}({})", base_str, m, arg_str);
                 self.folded += 1;

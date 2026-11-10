@@ -151,6 +151,33 @@ fn transpile_cframe_new_12arg_uses_solveequation() {
     assert_lossless("cframe_new_12arg", &out);
 }
 
+/// Method-call arguments that constant-fold (an inline Vector3.new with
+/// pure-literal args folds to a SetVariable1 literal, so expr() returns a
+/// Val::Lit) must render as their raw Luau text inside the equation - NOT
+/// as the string "nil", which made the equation compute garbage at runtime.
+#[test]
+fn transpile_cframe_method_folded_arg_uses_raw_text() {
+    let src = "local cf = workspace.CurrentCamera.CFrame\n\
+               local v = cf:PointToObjectSpace(Vector3.new(1, 2, 3))\n";
+    let out = assert_transpile_ok("cframe_method_folded_arg", src);
+
+    let eq = out.report.blocks.values().find(|b| {
+        b.block_type == "SolveEquation"
+            && b.inputs.iter().any(|inp| {
+                inp.iname == "Equation"
+                    && inp.value.as_deref().map_or(false, |s| {
+                        s.contains("PointToObjectSpace(Vector3.new(1, 2, 3))")
+                    })
+            })
+    });
+    assert!(
+        eq.is_some(),
+        "folded constructor arg must render as raw text in the equation, not 'nil'"
+    );
+
+    assert_lossless("cframe_method_folded_arg", &out);
+}
+
 /// Each supported service routes via GetObjectProperty(game, <svc>)
 /// — the runtime-verified shape (NOT Val::Path).
 #[test]
