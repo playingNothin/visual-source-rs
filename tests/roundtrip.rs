@@ -122,7 +122,52 @@ const CASES: &[(&str, &str, bool)] = &[
     ("elseif_gates", ELSEIF_GATES, true),
     ("table_passthru", TABLE_PASSTHRU, true),
     ("table_keys_concat", TABLE_KEYS_CONCAT, true),
+    ("escapes", ESCAPES, true),
 ];
+
+// User-caught (v8): a dictionary with backslash / bracket / quote keys rode
+// a SolveEquation whose text is RAW RS syntax (no escapes, `\` is an
+// ordinary character) - the detranspiler used to copy it verbatim into the
+// Luau output, producing `["\"] = 92`, which does not parse. Also pinned:
+// empty CreateTable blocks must render `local x = {}`, never
+// `local x = x` (nil at runtime).
+const ESCAPES: &str = r#"
+local DICT = { ["\\"] = 92, ["]"] = 93, ["["] = 91, [" "] = 32 }
+local EMPTY = {}
+DICT["\""] = 34
+print(DICT["\\"])
+"#;
+
+#[test]
+fn detranspiled_escapes_are_valid_luau() {
+    let out = tr("escapes", ESCAPES);
+    let payload = encoder::encode_payload(&out.report).unwrap();
+    let dec = VisualSource::decode(&payload)
+        .unwrap_or_else(|e| panic!("decode failed: {}", e));
+    let dt = transpile::detranspile::detranspile(&dec);
+    // the correct Luau rendering of the backslash key (two chars: \\ )
+    assert!(
+        dt.luau.contains(r#"["\\"] = 92"#),
+        "backslash key must be re-escaped, got:\n{}",
+        dt.luau
+    );
+    // the broken form: a bare backslash before the closing quote
+    assert!(
+        !dt.luau.contains("[\"\\\"] = 92"),
+        "unescaped equation text leaked into the Luau output:\n{}",
+        dt.luau
+    );
+    assert!(
+        dt.luau.contains("local EMPTY = {}"),
+        "empty table must render as {{}}, got:\n{}",
+        dt.luau
+    );
+    assert!(
+        !dt.luau.contains("local EMPTY = EMPTY"),
+        "empty table rendered as a self-reference (nil at runtime):\n{}",
+        dt.luau
+    );
+}
 
 const ELSE_WHILE: &str = r#"
 local squares = {}

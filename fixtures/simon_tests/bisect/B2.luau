@@ -1,0 +1,6 @@
+-- B2: fixed-schema literals (TimeOut, CanReturnNil, Recursive, Wait)
+local part = workspace:WaitForChild("Part")
+local child = part:FindFirstChild("Fill")
+part:WaitForChild("Handle", 5)
+wait(1)
+print("b2 ok")

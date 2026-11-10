@@ -104,14 +104,49 @@ struct Detranspiler<'a> {
     out: String,
     indent: usize,
     depth: usize,
+    /// temp bindings (t<N>) written by MORE THAN ONE block - path-dependent
+    /// script-level variables (the `t27 = A; if A then t27 = B end`
+    /// and-chain materialization). Use sites reference them by name.
+    multi_def: HashSet<String>,
+    /// temps already emitted as declarations/assignments
+    materialized: HashSet<String>,
+    /// temp bindings referenced through block-reference slots as raw
+    /// strings (SetTableValue's Table = "t65") - the definer must be
+    /// emitted as a named local or these writes orphan
+    string_used: HashSet<String>,
+    /// recursion depth of equation-text resolution (cycle guard)
+    eq_depth: std::cell::Cell<usize>,
 }
 
 /// Entry point: reconstruct Luau from a decoded report.
 pub fn detranspile(report: &DecodedReport) -> DetranspileOutput {
     let mut owner = HashMap::new();
+    let mut definer_count: HashMap<&String, usize> = HashMap::new();
     for b in report.blocks.values() {
         for (_, binding) in &b.outputs {
             owner.insert(binding.clone(), b.name.clone());
+            *definer_count.entry(binding).or_insert(0) += 1;
+        }
+    }
+    let multi_def: HashSet<String> = definer_count
+        .into_iter()
+        .filter(|(k, c)| *c > 1 && is_temp(k))
+        .map(|(k, _)| k.clone())
+        .collect();
+    // block-reference slots carry the target variable as a raw string:
+    // SetTableValue in Table = "t65" writes into temp t65 without any
+    // use_var wiring, so its definer must be materialized by name
+    const REF_SLOTS: &[&str] = &["Table", "Object", "Parent", "Function", "BindableFunction"];
+    let mut string_used = HashSet::new();
+    for b in report.blocks.values() {
+        for i in &b.inputs {
+            if !i.use_var && REF_SLOTS.contains(&i.iname.as_str()) {
+                if let Some(v) = &i.value {
+                    if is_temp(v) {
+                        string_used.insert(v.clone());
+                    }
+                }
+            }
         }
     }
     let mut d = Detranspiler {
@@ -122,6 +157,10 @@ pub fn detranspile(report: &DecodedReport) -> DetranspileOutput {
         out: String::new(),
         indent: 0,
         depth: 0,
+        multi_def,
+        materialized: HashSet::new(),
+        string_used,
+        eq_depth: std::cell::Cell::new(0),
     };
     // roots: blocks nothing points at as child/else_child
     let mut is_child: HashSet<&String> = HashSet::new();
@@ -245,8 +284,12 @@ impl<'a> Detranspiler<'a> {
             | "LoopThroughTable" | "LoopThroughChildren" => binding.to_string(),
             _ => {
                 // var-assigned bindings were emitted as an assignment in the
-                // sequence walk; temps are inlined as expressions
-                if !is_temp(binding) {
+                // sequence walk; temps are inlined as expressions - unless
+                // they were materialized (multi-def / string-referenced)
+                if !is_temp(binding)
+                    || self.materialized.contains(binding)
+                    || self.string_used.contains(binding)
+                {
                     return binding.to_string();
                 }
                 self.expr_of_block(b)
@@ -276,10 +319,22 @@ impl<'a> Detranspiler<'a> {
                     format!("{}:Invoke({})", f, args.join(", "))
                 }
             }
-            "SolveEquation" => self
-                .inp(b, "Equation")
-                .map(|i| i.value.clone().unwrap_or_default())
-                .unwrap_or_else(|| binding.to_string()),
+            "SolveEquation" => {
+                let text = self
+                    .inp(b, "Equation")
+                    .map(|i| i.value.clone().unwrap_or_default())
+                    .unwrap_or_default();
+                let d = self.eq_depth.get();
+                if d > 8 {
+                    // pathological payload: equations resolving into each
+                    // other - fall back to the raw text
+                    return text;
+                }
+                self.eq_depth.set(d + 1);
+                let r = self.luau_equation(&text);
+                self.eq_depth.set(d);
+                r
+            }
             "Addition" => self.binop(b, "Number1", "Number2", "+"),
             "Subtraction" => self.binop(b, "Number1", "Number2", "-"),
             "Multiplication" => self.binop(b, "Number1", "Number2", "*"),
@@ -502,6 +557,61 @@ impl<'a> Detranspiler<'a> {
         self.inp(b, name)
             .map(|i| i.value.clone().unwrap_or_default())
             .unwrap_or_default()
+    }
+
+    /// Render a raw RS equation chunk as valid Luau (see the luau_equation
+    /// note above): re-escape string literals, resolve temp-binding tokens.
+    fn luau_equation(&self, text: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        let mut chars = text.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '"' {
+                // raw RS literal: content ends at the closing quote, and a
+                // raw backslash/quote inside would break the Luau parse
+                let mut content = String::new();
+                for c2 in chars.by_ref() {
+                    if c2 == '"' {
+                        break;
+                    }
+                    content.push(c2);
+                }
+                out.push_str(&quote(&content));
+            } else if c.is_ascii_alphabetic() || c == '_' {
+                let mut tok = String::new();
+                tok.push(c);
+                while let Some(&n) = chars.peek() {
+                    if n.is_ascii_alphanumeric() || n == '_' {
+                        tok.push(n);
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+                out.push_str(&self.resolve_eq_token(&tok));
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    /// One identifier token of an equation: temp bindings resolve to their
+    /// definer's inline expression, everything else passes through.
+    fn resolve_eq_token(&self, tok: &str) -> String {
+        if is_temp(tok) && !self.materialized.contains(tok) {
+            if let Some(owner) = self.owner.get(tok) {
+                if let Some(b) = self.block(owner) {
+                    // expr_of_block on SetVariable1/CreateTable/... returns
+                    // the binding itself, so such definers pass through
+                    // unchanged - only genuinely inlineable temps resolve
+                    let expr = self.expr_of_block(b);
+                    if expr != *tok {
+                        return expr;
+                    }
+                }
+            }
+        }
+        tok.to_string()
     }
 
     fn arg(&self, b: &'a DecodedBlock, name: &str) -> String {
@@ -731,6 +841,62 @@ impl<'a> Detranspiler<'a> {
             // temp outputs (t<N>) are intermediates of the consuming
             // statement's chain and are reconstructed inline there.
             if !effectful(bt) {
+                if bt == "CreateTable" {
+                    // A CreateTable block always defines a fresh table: emit
+                    // the declaration even for temp bindings, or the
+                    // SetTableValue writes targeting the temp by name would
+                    // reference an undeclared variable - and a named table
+                    // would render as `local vals = vals` (nil at runtime).
+                    let binding = b
+                        .outputs
+                        .first()
+                        .map(|(_, s)| s.clone())
+                        .unwrap_or_default();
+                    if !binding.is_empty() {
+                        if self.declare_name(&binding) {
+                            self.line(&format!("{} = {{}}", binding));
+                        } else {
+                            self.line(&format!("local {} = {{}}", binding));
+                            if let Some(s) = self.scopes.last_mut() {
+                                s.insert(binding.clone());
+                            }
+                        }
+                    }
+                    let kids = b.children.clone();
+                    self.walk_seq(&kids, true);
+                    continue;
+                }
+                // A multi-defined temp that is ALREADY declared (its first
+                // definer was a SetVariable1 in an enclosing scope) is a
+                // path-dependent script-level variable - the transpiler's
+                // `t27 = A; if A then t27 = B end` and-chain materialization.
+                // Every later definer renders as an assignment and use sites
+                // reference the name. Multi-defined temps NOT yet declared
+                // (loop-condition re-check children, CSE merges) stay
+                // inlinable - inlining them is path-independent.
+                let temp_outs: Vec<String> = b
+                    .outputs
+                    .iter()
+                    .filter(|(_, bnd)| {
+                        !bnd.is_empty()
+                            && ((self.multi_def.contains(bnd) && self.declare_name(bnd))
+                                || self.string_used.contains(bnd))
+                    })
+                    .map(|(_, bnd)| bnd.clone())
+                    .collect();
+                for t in &temp_outs {
+                    if self.materialized.insert(t.clone()) {
+                        let val = self.expr_of_block(b);
+                        if self.declare_name(t) {
+                            self.line(&format!("{} = {}", t, val));
+                        } else {
+                            self.line(&format!("local {} = {}", t, val));
+                            if let Some(s) = self.scopes.last_mut() {
+                                s.insert(t.clone());
+                            }
+                        }
+                    }
+                }
                 let var_outs: Vec<String> = b
                     .outputs
                     .iter()
@@ -1186,6 +1352,18 @@ fn quote(s: &str) -> String {
     out.push('"');
     out
 }
+
+/// RetroStudio parses equation text as ONE raw chunk: string literals carry
+/// no escapes and end at the first `"` (see rs_support.rs patch22 - `\` is
+/// an ordinary character inside them). That text is only valid inside RS's
+/// equation compiler; as Luau source a raw `\` or `"` breaks the parse.
+/// Re-emit every literal through `quote()` so the equation is valid Luau.
+///
+/// Equations also embed variable references baked in by the emitter
+/// (`#t70` for string.len, `CH2B.A` member reads). References to DECLARED
+/// variables are fine; references to temp bindings (t<N>) would orphan -
+/// their definer block is never walked because no input points at it via
+/// use_var. Those tokens are replaced by their inlined expression.
 
 fn bool_str(v: &str) -> String {
     if v == "1" {

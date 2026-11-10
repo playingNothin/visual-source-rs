@@ -1,0 +1,6 @@
+-- B1: refs + constructors (proven: T1, T2)
+local Players = game:GetService("Players")
+local simon = workspace:WaitForChild("SimonSays")
+local ACCENT = Color3.fromRGB(255, 60, 60)
+local TEAM = BrickColor.new(21)
+print("b1 ok")
