@@ -65,10 +65,11 @@ fn run(args: &[String]) -> Result<String, String> {
             ))
         }
         Some("transpile") => {
-            let input = arg(args, 2, "transpile <input.luau> [output.vs] [--dump]")?;
+            let input = arg(args, 2, "transpile <input.luau> [output.vs] [--dump] [--notes]")?;
             let source = read(&input)?;
             let dump = args.iter().any(|a| a == "--dump" || a == "-v" || a == "--verbose");
-            let out = transpile_source(&input, &source, dump)?;
+            let show_notes = args.iter().any(|a| a == "--notes");
+            let out = transpile_source(&input, &source, dump, show_notes)?;
             let output_path = args.get(3).filter(|a| !a.starts_with('-'));
             match output_path {
                 Some(path) => {
@@ -138,16 +139,32 @@ pub struct TranspileCliOutput {
     pub report_text: String,
 }
 
-fn transpile_source(label: &str, source: &str, dump: bool) -> Result<TranspileCliOutput, String> {
+fn transpile_source(label: &str, source: &str, dump: bool, show_notes: bool) -> Result<TranspileCliOutput, String> {
     let out = visual_source_rs::transpile::transpile(source, label, true)?;
     let mut text = String::new();
     text.push_str(&format!("transpiled: {} ({} Luau lines)\n", label, source.lines().count()));
     text.push_str(&out.budget);
     text.push('\n');
     if !out.notes.is_empty() {
+        // quiet by default: actionable notes (UNSUPPORTED/VERIFY) print in
+        // full; INFO/WORKAROUND describe internal lowering decisions, so
+        // they collapse to a count line -- --notes shows all bodies
+        let actionable = |k: &str| k == "UNSUPPORTED" || k == "VERIFY";
+        let front: Vec<_> = out.notes.iter().filter(|n| actionable(&n.kind)).collect();
+        let rest: Vec<_> = out.notes.iter().filter(|n| !actionable(&n.kind)).collect();
         text.push_str("\nnotes:\n");
-        for n in &out.notes {
+        for n in &front {
             text.push_str(&format!("  [{}] {}\n", n.kind, n.msg));
+        }
+        if show_notes {
+            for n in &rest {
+                text.push_str(&format!("  [{}] {}\n", n.kind, n.msg));
+            }
+        } else if !rest.is_empty() {
+            text.push_str(&format!(
+                "  (+ {} info/workaround note(s) hidden - pass --notes to show)\n",
+                rest.len()
+            ));
         }
     }
     if dump {

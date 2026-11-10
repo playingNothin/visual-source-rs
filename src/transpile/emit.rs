@@ -5126,7 +5126,31 @@ pub(crate) fn eq_expr(&self, e: &Expr) -> String {
                                 );
                                 return Val::Var(out);
                             }
-                            _ => {}
+                            _ => {
+                                // SolveEquation adoption (user tip, same
+                                // pattern as Vector3.new below): RetroStudio
+                                // evaluates the raw constructor call text,
+                                // variable names resolve at runtime. Covers
+                                // the 3-arg position form, the 12-arg matrix
+                                // form (saved build scripts), and any other
+                                // arity - no UNSUPPORTED flag anymore.
+                                let mut eq = String::from("CFrame.new(");
+                                for (idx, a) in args.iter().enumerate() {
+                                    if idx > 0 {
+                                        eq.push_str(", ");
+                                    }
+                                    eq.push_str(&self.eq_expr(a));
+                                }
+                                eq.push(')');
+                                self.emit(
+                                    "SolveEquation",
+                                    vec![("Equation".into(),
+                                          InputVal::Literal { value: eq, vtype: "String".into() })],
+                                    vec![("Result".into(), out.clone())],
+                                    chain,
+                                );
+                                return Val::Var(out);
+                            }
                         },
                         ("Vector3", "new") if args.len() == 3 => {
                             // SolveEquation adoption (user tip): one

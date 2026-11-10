@@ -436,11 +436,24 @@ async function doToVs() {
       const kinds = {};
       notes.forEach((n) => { kinds[n.kind] = (kinds[n.kind] || 0) + 1; });
       const badge = Object.entries(kinds).map(([k, v]) => k + ':' + v).join(' · ');
+      // actionable notes (UNSUPPORTED/VERIFY) list in full; INFO/WORKAROUND
+      // describe internal lowering decisions - collapse into an expandable
+      // section so a clean run stays clean
+      const ACTIONABLE = ['UNSUPPORTED', 'VERIFY'];
+      const front = notes.filter((n) => ACTIONABLE.includes(n.kind));
+      const rest = notes.filter((n) => !ACTIONABLE.includes(n.kind));
       let html = '<div class="msg info">compiler notes (' + badge + '):<br>';
-      notes.slice(0, 30).forEach((n) => {
+      front.slice(0, 30).forEach((n) => {
         html += escapeHtml('[' + n.kind + '] ' + n.msg) + '<br>';
       });
-      if (notes.length > 30) html += '… ' + (notes.length - 30) + ' more';
+      if (front.length > 30) html += '… ' + (front.length - 30) + ' more';
+      if (rest.length) {
+        html += '<details><summary style="cursor:pointer">show ' + rest.length + ' info/workaround note(s)</summary>';
+        rest.forEach((n) => {
+          html += escapeHtml('[' + n.kind + '] ' + n.msg) + '<br>';
+        });
+        html += '</details>';
+      }
       html += '</div>';
       document.getElementById('luautos-notes').innerHTML = html;
     }

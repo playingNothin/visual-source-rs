@@ -71,7 +71,7 @@ def main() -> None:
 // NETWORK-FIRST: when online, the latest deployed page is always fetched and
 // the cache is refreshed, so every site redeploy shows up on the next visit.
 // The cache is only used as the offline fallback.
-const CACHE = 'vs4-offline-v12';
+const CACHE = 'vs4-offline-v13';
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(['./'])));
   self.skipWaiting();

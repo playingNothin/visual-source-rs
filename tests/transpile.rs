@@ -114,6 +114,43 @@ fn transpile_getservice_workspace_uses_getobjectproperty() {
     assert_lossless("getservice_workspace", &out);
 }
 
+/// CFrame.new 12-arg matrix form (saved build scripts carry thousands of
+/// these) lowers to ONE SolveEquation carrying the raw constructor text —
+/// user tip: RetroStudio evaluates `CFrame.new(...)` inside SolveEquation.
+/// It must NOT be flagged UNSUPPORTED anymore.
+#[test]
+fn transpile_cframe_new_12arg_uses_solveequation() {
+    let src = "local p = Instance.new(\"Part\")\n\
+               p.CFrame = CFrame.new(97.5, 75.7, -64.3, 5.3e-15, 7.4e-16, -1, \
+               -0.34, 0.93, -1.1e-15, 0.93, 0.34, 5.2e-15)\n";
+    let out = assert_transpile_ok("cframe_new_12arg", src);
+
+    assert!(
+        !out.notes.iter().any(|n| n.kind == "UNSUPPORTED"),
+        "CFrame.new 12-arg must not be flagged UNSUPPORTED (SolveEquation lowering)"
+    );
+
+    // one SolveEquation whose Equation input is the full constructor text:
+    // 12 arguments -> 11 commas, opens with CFrame.new(, closes with )
+    let eq = out.report.blocks.values().find(|b| {
+        b.block_type == "SolveEquation"
+            && b.inputs.iter().any(|inp| {
+                inp.iname == "Equation"
+                    && inp.value.as_deref().map_or(false, |v| {
+                        v.starts_with("CFrame.new(")
+                            && v.ends_with(')')
+                            && v.matches(',').count() == 11
+                    })
+            })
+    });
+    assert!(
+        eq.is_some(),
+        "CFrame.new 12-arg must emit SolveEquation with the raw constructor text"
+    );
+
+    assert_lossless("cframe_new_12arg", &out);
+}
+
 /// Each supported service routes via GetObjectProperty(game, <svc>)
 /// — the runtime-verified shape (NOT Val::Path).
 #[test]
