@@ -116,6 +116,9 @@ pub struct Transpiler {
     optimize: bool,
     catalog: serde_json::Value,
     nil_ref_binding: Option<String>,
+    /// one INFO per transpile for parent-less Instance.new - the guidance
+    /// is identical for every occurrence, per-instance notes were noise
+    nil_parent_noted: bool,
     fn_returns: HashMap<String, usize>,
     /// [patch10] functions PROVEN to return a Lua table (a Return expr that
     /// is a tracked table binding). Call sites use this to register the
@@ -191,6 +194,7 @@ impl Transpiler {
             optimize,
             catalog,
             nil_ref_binding: None,
+            nil_parent_noted: false,
             fn_returns: HashMap::new(),
             fn_ret_table: std::collections::HashSet::new(),
             fn_ret_passthru: HashMap::new(),
@@ -3639,6 +3643,23 @@ impl Transpiler {
                     "ServerStorage",
                     "ServerScriptService",
                 ];
+                // Services confirmed present in RetroStudio - no VERIFY note.
+                // Workspace/Lighting/Players/Soundscape/Debris/StarterGui/
+                // StarterPack/Teams via the transpile test list, RunService
+                // and UserInputService via the runtime event test (comment
+                // above). Anything outside BOTH lists keeps the VERIFY note.
+                const RS_KNOWN_SERVICES: &[&str] = &[
+                    "Workspace",
+                    "Lighting",
+                    "Players",
+                    "RunService",
+                    "UserInputService",
+                    "Soundscape",
+                    "Debris",
+                    "StarterGui",
+                    "StarterPack",
+                    "Teams",
+                ];
                 if let Val::Lit(LitVal::Str(svc_name)) = &sv {
                     if RS_UNSUPPORTED_SERVICES.contains(&svc_name.as_str()) {
                         self.flag_unsupported(
@@ -3647,13 +3668,15 @@ impl Transpiler {
                         );
                         return Val::Lit(LitVal::Nil);
                     }
-                    self.note(
-                        "VERIFY",
-                        format!(
-                            "game:GetService({:?}) - verify the service is available in RetroStudio",
-                            svc_name
-                        ),
-                    );
+                    if !RS_KNOWN_SERVICES.contains(&svc_name.as_str()) {
+                        self.note(
+                            "VERIFY",
+                            format!(
+                                "game:GetService({:?}) - verify the service is available in RetroStudio",
+                                svc_name
+                            ),
+                        );
+                    }
                 }
                 self.emit(
                     "GetObjectProperty",
@@ -4984,10 +5007,13 @@ pub(crate) fn eq_expr(&self, e: &Expr) -> String {
                                 self.nil_ref_binding = Some(b);
                             }
                             let binding = self.nil_ref_binding.clone().unwrap();
-                            self.note("INFO", format!(
-                                "Instance.new({:?}) with no parent: Parent bound to nil-reference {:?} (Luau nil-parent semantics; assign .Parent explicitly to place it)",
-                                cls, binding
-                            ));
+                            if !self.nil_parent_noted {
+                                self.nil_parent_noted = true;
+                                self.note("INFO", format!(
+                                    "Instance.new({:?}) with no parent: Parent bound to nil-reference {:?} (applies to every parent-less Instance.new; assign .Parent explicitly to place it)",
+                                    cls, binding
+                                ));
+                            }
                             inputs.push(("Parent".into(), InputVal::Var(binding)));
                         }
                             self.emit(

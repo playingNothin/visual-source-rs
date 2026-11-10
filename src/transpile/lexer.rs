@@ -17,6 +17,74 @@ pub enum Tok {
     Eof,
 }
 
+impl Tok {
+    /// Human-readable form for parse-error messages: keywords and symbols
+    /// render as themselves, Name/Number/Str as plain words instead of
+    /// Rust debug output (Name("e") used to read like internal noise).
+    pub fn describe(&self) -> String {
+        match self {
+            Tok::Name(s) => format!("identifier '{}'", s),
+            Tok::Number(v) => format!("number {}", v),
+            Tok::Str(s) => {
+                let mut t: String = s.chars().take(24).collect();
+                if s.chars().count() > 24 {
+                    t.push('…');
+                }
+                format!("string \"{}\"", t.replace('"', "\\\""))
+            }
+            Tok::Local => "'local'".into(),
+            Tok::Function => "'function'".into(),
+            Tok::End => "'end'".into(),
+            Tok::If => "'if'".into(),
+            Tok::Then => "'then'".into(),
+            Tok::Elseif => "'elseif'".into(),
+            Tok::Else => "'else'".into(),
+            Tok::While => "'while'".into(),
+            Tok::Do => "'do'".into(),
+            Tok::For => "'for'".into(),
+            Tok::In => "'in'".into(),
+            Tok::Return => "'return'".into(),
+            Tok::Break => "'break'".into(),
+            Tok::Continue => "'continue'".into(),
+            Tok::And => "'and'".into(),
+            Tok::Or => "'or'".into(),
+            Tok::Not => "'not'".into(),
+            Tok::Nil => "'nil'".into(),
+            Tok::True => "'true'".into(),
+            Tok::False => "'false'".into(),
+            Tok::Repeat => "'repeat'".into(),
+            Tok::Until => "'until'".into(),
+            Tok::Plus => "'+'".into(),
+            Tok::Minus => "'-'".into(),
+            Tok::Star => "'*'".into(),
+            Tok::Slash => "'/'".into(),
+            Tok::Percent => "'%'".into(),
+            Tok::Caret => "'^'".into(),
+            Tok::Hash => "'#'".into(),
+            Tok::DotDot => "'..'".into(),
+            Tok::Dot => "'.'".into(),
+            Tok::Comma => "','".into(),
+            Tok::Semi => "';'".into(),
+            Tok::Assign => "'='".into(),
+            Tok::Eq => "'=='".into(),
+            Tok::Ne => "'~='".into(),
+            Tok::Lt => "'<'".into(),
+            Tok::Le => "'<='".into(),
+            Tok::Gt => "'>'".into(),
+            Tok::Ge => "'>='".into(),
+            Tok::LParen => "'('".into(),
+            Tok::RParen => "')'".into(),
+            Tok::LBrace => "'{'".into(),
+            Tok::RBrace => "'}'".into(),
+            Tok::LBracket => "'['".into(),
+            Tok::RBracket => "']'".into(),
+            Tok::Colon => "':'".into(),
+            Tok::DColon => "'::'".into(),
+            Tok::Eof => "end of file".into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Token {
     pub tok: Tok,
@@ -138,13 +206,49 @@ pub fn lex_with_comments(src: &str) -> Result<(Vec<Token>, Vec<CapturedComment>)
             push!(t);
             continue;
         }
-        // numbers
+        // numbers: decimal with optional e/E exponent, hex 0x... integer
         if c.is_ascii_digit() || (c == '.' && i + 1 < n && b[i + 1].is_ascii_digit()) {
             let start = i;
+            if c == '0' && i + 1 < n && (b[i + 1] == 'x' || b[i + 1] == 'X') {
+                i += 2;
+                let hstart = i;
+                while i < n && (b[i] as char).is_ascii_hexdigit() {
+                    i += 1;
+                }
+                if i == hstart {
+                    return Err(LexError {
+                        msg: "malformed number: '0x' without hex digits".into(),
+                        line,
+                        col,
+                    });
+                }
+                let s: String = b[hstart..i].iter().collect();
+                let v = u64::from_str_radix(&s, 16).map_err(|_| LexError {
+                    msg: format!("bad hex number 0x{}", s),
+                    line,
+                    col,
+                })? as f64;
+                col += i - start;
+                push!(Tok::Number(v));
+                continue;
+            }
             while i < n && (b[i].is_ascii_digit() || b[i] == '.') {
                 i += 1;
             }
-            // hex literals 0x...
+            // scientific notation: e/E, optional sign, then at least one
+            // digit - otherwise the 'e' is left to lex as an identifier
+            if i < n && (b[i] == 'e' || b[i] == 'E') {
+                let mut j = i + 1;
+                if j < n && (b[j] == '+' || b[j] == '-') {
+                    j += 1;
+                }
+                if j < n && b[j].is_ascii_digit() {
+                    while j < n && b[j].is_ascii_digit() {
+                        j += 1;
+                    }
+                    i = j;
+                }
+            }
             let s: String = b[start..i].iter().collect();
             let v: f64 = s.parse().map_err(|_| LexError {
                 msg: format!("bad number {:?}", s),

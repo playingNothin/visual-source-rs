@@ -61,7 +61,11 @@ impl Parser {
         if self.at(t) {
             Ok(self.bump())
         } else {
-            Err(self.err(format!("expected {:?}, found {:?}", t, self.cur().tok)))
+            Err(self.err(format!(
+                "expected {}, found {}",
+                t.describe(),
+                self.cur().tok.describe()
+            )))
         }
     }
     fn err(&self, msg: String) -> ParseError {
@@ -84,7 +88,7 @@ impl Parser {
                     self.bump();
                     let name = match self.bump().tok {
                         Tok::Name(n) => n,
-                        other => return Err(self.err(format!("bad function name {:?}", other))),
+                        other => return Err(self.err(format!("bad function name: found {}", other.describe()))),
                     };
                     let params = self.params()?;
                     let body = self.body()?;
@@ -95,7 +99,7 @@ impl Parser {
                 loop {
                     match self.bump().tok {
                         Tok::Name(n) => names.push(n),
-                        other => return Err(self.err(format!("bad local name {:?}", other))),
+                        other => return Err(self.err(format!("bad local name: found {}", other.describe()))),
                     }
                     if self.at(&Tok::Comma) {
                         self.bump();
@@ -168,7 +172,7 @@ impl Parser {
                 self.bump();
                 let first = match self.bump().tok {
                     Tok::Name(n) => n,
-                    other => return Err(self.err(format!("bad for variable {:?}", other))),
+                    other => return Err(self.err(format!("bad for variable: found {}", other.describe()))),
                 };
                 if self.at(&Tok::Assign) {
                     self.bump();
@@ -191,7 +195,7 @@ impl Parser {
                         self.bump();
                         match self.bump().tok {
                             Tok::Name(n) => names.push(n),
-                            other => return Err(self.err(format!("bad for variable {:?}", other))),
+                            other => return Err(self.err(format!("bad for variable: found {}", other.describe()))),
                         }
                     }
                     self.eat(&Tok::In)?;
@@ -239,7 +243,7 @@ impl Parser {
                 self.bump();
                 let mut name = match self.bump().tok {
                     Tok::Name(n) => n,
-                    other => return Err(self.err(format!("bad function name {:?}", other))),
+                    other => return Err(self.err(format!("bad function name: found {}", other.describe()))),
                 };
                 while self.at(&Tok::Dot) {
                     self.bump();
@@ -261,7 +265,7 @@ impl Parser {
                             ps2.extend(ps);
                             ps2
                         }
-                        other => return Err(self.err(format!("bad method name {:?}", other))),
+                        other => return Err(self.err(format!("bad method name: found {}", other.describe()))),
                     }
                 } else {
                     self.params()?
@@ -305,7 +309,7 @@ impl Parser {
             loop {
                 match self.bump().tok {
                     Tok::Name(nm) => out.push(nm),
-                    other => return Err(self.err(format!("bad parameter {:?}", other))),
+                    other => return Err(self.err(format!("bad parameter: found {}", other.describe()))),
                 }
                 if self.at(&Tok::Comma) {
                     self.bump();
@@ -510,7 +514,7 @@ impl Parser {
                 self.eat(&Tok::RBrace)?;
                 Ok(Expr::Table(fields))
             }
-            other => Err(self.err(format!("unexpected token {:?}", other))),
+            other => Err(self.err(format!("unexpected {}", other.describe()))),
         }
     }
 
@@ -522,7 +526,12 @@ impl Parser {
                     self.bump();
                     match self.bump().tok {
                         Tok::Name(n) => e = Expr::Index(Box::new(e), Box::new(Expr::Str(n))),
-                        other => return Err(self.err(format!("bad index {:?}", other))),
+                        other => {
+                            return Err(self.err(format!(
+                                "expected a field name after '.', found {}",
+                                other.describe()
+                            )))
+                        }
                     }
                 }
                 Tok::LBracket => {
@@ -535,7 +544,7 @@ impl Parser {
                     self.bump();
                     let m = match self.bump().tok {
                         Tok::Name(n) => n,
-                        other => return Err(self.err(format!("bad method {:?}", other))),
+                        other => return Err(self.err(format!("bad method call: found {}", other.describe()))),
                     };
                     let args = self.args()?;
                     e = Expr::Method(Box::new(e), m, args);
