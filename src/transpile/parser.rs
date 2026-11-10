@@ -154,6 +154,16 @@ impl Parser {
                 self.eat(&Tok::End)?;
                 Ok(Stmt::While(cond, body))
             }
+            Tok::Repeat => {
+                self.bump();
+                let mut body = self.body()?;
+                self.eat(&Tok::Until)?;
+                let cond = self.expr()?;
+                // repeat B until C  ==  while true do B; if C then break end end
+                // (block_end() already stops the body scan at Until)
+                body.push(Stmt::If(vec![(cond, vec![Stmt::Break])], None));
+                Ok(Stmt::While(Expr::Bool(true), body))
+            }
             Tok::For => {
                 self.bump();
                 let first = match self.bump().tok {
@@ -237,7 +247,25 @@ impl Parser {
                         name = n; // take the LAST segment (OnInvoke-style assignment)
                     }
                 }
-                let params = self.params()?;
+                // method definition sugar: `function obj:m(a) end` - the
+                // colon comes BEFORE the params; take the method name and
+                // prepend the implicit `self` parameter
+                let mut params = if self.at(&Tok::Colon) {
+                    self.bump();
+                    match self.bump().tok {
+                        Tok::Name(n) => {
+                            name = n;
+                            let ps = self.params()?;
+                            let mut ps2 = Vec::with_capacity(ps.len() + 1);
+                            ps2.push("self".to_string());
+                            ps2.extend(ps);
+                            ps2
+                        }
+                        other => return Err(self.err(format!("bad method name {:?}", other))),
+                    }
+                } else {
+                    self.params()?
+                };
                 let body = self.body()?;
                 self.eat(&Tok::End)?;
                 Ok(Stmt::LocalFunction(name, params, body))

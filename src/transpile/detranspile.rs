@@ -283,6 +283,14 @@ impl<'a> Detranspiler<'a> {
             "SetVariable1" | "CreateTable" | "DefineFunction" | "ForLoop2"
             | "LoopThroughTable" | "LoopThroughChildren" => binding.to_string(),
             _ => {
+                // call blocks have side effects: NEVER inline them at use
+                // sites. The sequence walk materializes the definer as a
+                // `local tN = f(...)` statement, so referencing the name is
+                // both correct and order-safe - inlining re-executed the
+                // call (obj:add(3):get() ran add twice).
+                if b.block_type == "ExecuteFunction" || b.block_type == "BindableFunctionInvoke" {
+                    return binding.to_string();
+                }
                 // var-assigned bindings were emitted as an assignment in the
                 // sequence walk; temps are inlined as expressions - unless
                 // they were materialized (multi-def / string-referenced)
@@ -358,7 +366,22 @@ impl<'a> Detranspiler<'a> {
             }
             "GetTableLength" | "GetLength" => {
                 let what = if b.block_type == "GetLength" { "String" } else { "Table" };
-                format!("#{}", self.obj_expr(b, what))
+                // the emitter only routes GetLength to literal string
+                // operands (variable operands ride SolveEquation '#name'),
+                // so a raw string field here IS the literal - render it
+                // quoted, otherwise #("hello") came back as #hello and
+                // resolved to an undefined global
+                let rendered = if b.block_type == "GetLength" {
+                    match self.inp(b, what) {
+                        Some(i) if !i.use_var => {
+                            quote(&i.value.clone().unwrap_or_default())
+                        }
+                        _ => self.obj_expr(b, what),
+                    }
+                } else {
+                    self.obj_expr(b, what)
+                };
+                format!("#{}", rendered)
             }
             "ToStringAny" => format!("tostring({})", self.arg(b, "Input")),
             "ToNumberAny" => format!("tonumber({})", self.arg(b, "Input")),
@@ -475,8 +498,10 @@ impl<'a> Detranspiler<'a> {
                 self.arg(b, "String"),
                 self.arg(b, "Pattern")
             ),
-            "Lower" => format!("{}:lower()", self.arg(b, "String")),
-            "Upper" => format!("{}:upper()", self.arg(b, "String")),
+            // a string-literal base needs parens for the method suffix to
+            // be valid outside Luau's looser grammar too
+            "Lower" => format!("({}):lower()", self.arg(b, "String")),
+            "Upper" => format!("({}):upper()", self.arg(b, "String")),
             "Substring" => format!(
                 "string.sub({}, {}, {})",
                 self.arg(b, "String"),
@@ -616,6 +641,18 @@ impl<'a> Detranspiler<'a> {
 
     fn arg(&self, b: &'a DecodedBlock, name: &str) -> String {
         match self.inp(b, name) {
+            Some(i) if !i.use_var && i.vtype.is_none() => {
+                // mode-0 raw inputs: the block schema decides how to read
+                // the value - String-schema entries are literals and must
+                // be quoted (hexish text like "abc" is NOT a number)
+                match schema_types()
+                    .get(&(b.block_type.clone(), name.to_string()))
+                    .map(String::as_str)
+                {
+                    Some("String") => quote(i.value.as_deref().unwrap_or("")),
+                    _ => self.expr_input(i),
+                }
+            }
             Some(i) => self.expr_input(i),
             None => "nil".to_string(),
         }
@@ -977,10 +1014,16 @@ impl<'a> Detranspiler<'a> {
                     let val = self
                         .bind_output_name(b, "Value")
                         .unwrap_or_else(|| "_v".to_string());
+                    // the Index output IS the loop key (for i, v in pairs(t));
+                    // dropping it left body references to the key unbound
+                    let key = self
+                        .bind_output_name(b, "Index")
+                        .unwrap_or_else(|| "_".to_string());
                     let kids = b.children.clone();
-                    self.line(&format!("for _, {} in pairs({}) do", val, t));
+                    self.line(&format!("for {}, {} in pairs({}) do", key, val, t));
                     self.indent += 1;
-                    self.scopes.push(HashSet::from([val.clone()]));
+                    self.scopes
+                        .push(HashSet::from([key.clone(), val.clone()]));
                     self.walk_seq(&kids, true);
                     self.scopes.pop();
                     self.indent -= 1;
@@ -1334,6 +1377,32 @@ fn looks_hex_num(v: &str) -> bool {
     };
     let hexish = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_hexdigit());
     hexish(whole) && frac.map(hexish).unwrap_or(true)
+}
+
+/// Schema lookup: (block type, input name) -> declared value_type. Mode-0
+/// raw inputs have no type tag of their own, so the schema is the only way
+/// to tell a String literal ("abc" would hex-decode as 2748) from a number.
+fn schema_types() -> &'static std::collections::HashMap<(String, String), String> {
+    static MAP: std::sync::OnceLock<std::collections::HashMap<(String, String), String>> =
+        std::sync::OnceLock::new();
+    MAP.get_or_init(|| {
+        let json = crate::vs_blocks::catalog();
+        let mut m = std::collections::HashMap::new();
+        if let Some(blocks) = json.as_object() {
+            for (btype, entry) in blocks {
+                if let Some(inputs) = entry["Inputs"].as_array() {
+                    for si in inputs {
+                        if let (Some(n), Some(t)) =
+                            (si["name"].as_str(), si["value_type"].as_str())
+                        {
+                            m.insert((btype.clone(), n.to_string()), t.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        m
+    })
 }
 
 fn quote(s: &str) -> String {

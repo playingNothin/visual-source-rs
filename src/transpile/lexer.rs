@@ -183,6 +183,52 @@ pub fn lex_with_comments(src: &str) -> Result<(Vec<Token>, Vec<CapturedComment>)
             push!(Tok::Str(s));
             continue;
         }
+        // long-bracket strings: [[...]] and [=[...]=] - raw content, no
+        // escape sequences, newlines allowed (level-0 and leveled brackets)
+        if c == '[' {
+            let mut eq = 0usize;
+            let mut j = i + 1;
+            while j < n && b[j] == '=' {
+                eq += 1;
+                j += 1;
+            }
+            if j < n && b[j] == '[' {
+                j += 1;
+                let mut s = String::new();
+                let mut l = line;
+                let mut cl = col + 2 + eq;
+                loop {
+                    if j >= n {
+                        return Err(LexError { msg: "unterminated long string".into(), line, col });
+                    }
+                    if b[j] == ']' {
+                        let mut k = j + 1;
+                        let mut e2 = 0usize;
+                        while k < n && b[k] == '=' {
+                            e2 += 1;
+                            k += 1;
+                        }
+                        if e2 == eq && k < n && b[k] == ']' {
+                            j = k + 1;
+                            break;
+                        }
+                    }
+                    if b[j] == '\n' {
+                        l += 1;
+                        cl = 1;
+                    } else {
+                        cl += 1;
+                    }
+                    s.push(b[j]);
+                    j += 1;
+                }
+                i = j;
+                line = l;
+                col = cl;
+                push!(Tok::Str(s));
+                continue;
+            }
+        }
         // operators
         let two = |a: char, d: char| i + 1 < n && b[i] == a && b[i + 1] == d;
         if two('.', '.') {

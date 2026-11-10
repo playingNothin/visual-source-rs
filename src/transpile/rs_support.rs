@@ -26,7 +26,7 @@ use super::emit::{EmittedBlock, InputVal, Transpiler};
 /// flagged dynamically by the call/method fallbacks - implementing an arm
 /// for a construct automatically un-flags it.
 pub(crate) fn rs_unsupported(name: &str) -> bool {
-    matches!(name, "string.format")
+    matches!(name, "string.format") || matches!(name, "pcall" | "xpcall")
 }
 
 /// [patch19] Run-7 experiment ledger (user-tested in RetroStudio, one

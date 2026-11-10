@@ -3040,8 +3040,93 @@ impl Transpiler {
             _ => {}
         }
 
+        // user-defined method calls: RetroStudio has no function tables,
+        // so obj:m(args) lowers to a plain call on the local function
+        // m(obj, args) (matches the method-definition desugar, which binds
+        // the last name segment as a local function with `self` first)
+        if self.lookup(m).is_some() {
+            let mut rewritten = Vec::with_capacity(args.len() + 1);
+            rewritten.push(base.clone());
+            rewritten.extend(args.iter().cloned());
+            return self.call_expr(&Expr::Name(m.to_string()), &rewritten, chain, bind);
+        }
+
         let basev = self.expr(base, chain, None);
         match (m, args) {
+            // string methods ride the same blocks as string.* calls - the
+            // RS catalog has Upper/Lower/Substring/GetLength/FindString, so
+            // s:upper() etc. used to fall to flag_unsupported for no reason
+            ("upper", []) => {
+                self.emit(
+                    "Upper",
+                    vec![("String".into(), self.val_input(&basev, "String"))],
+                    vec![("Result".into(), out.clone())],
+                    chain,
+                );
+                return Val::Var(out);
+            }
+            ("lower", []) => {
+                self.emit(
+                    "Lower",
+                    vec![("String".into(), self.val_input(&basev, "String"))],
+                    vec![("Result".into(), out.clone())],
+                    chain,
+                );
+                return Val::Var(out);
+            }
+            ("sub", []) | ("sub", [_]) | ("sub", [_, _]) => {
+                let sv = self.expr(&args[0], chain, None);
+                let ev = self
+                    .expr(args.get(1).unwrap_or(&Expr::Number(-1.0)), chain, None);
+                self.emit(
+                    "Substring",
+                    vec![
+                        ("String".into(), self.val_input(&basev, "String")),
+                        ("StartPoint".into(), self.val_input(&sv, "Number")),
+                        ("EndPoint".into(), self.val_input(&ev, "Number")),
+                    ],
+                    vec![("Result".into(), out.clone())],
+                    chain,
+                );
+                return Val::Var(out);
+            }
+            ("len", []) => {
+                if let Val::Var(name) = &basev {
+                    self.emit(
+                        "SolveEquation",
+                        vec![(
+                            "Equation".into(),
+                            InputVal::Literal {
+                                value: format!("#{}", name),
+                                vtype: "String".into(),
+                            },
+                        )],
+                        vec![("Result".into(), out.clone())],
+                        chain,
+                    );
+                } else {
+                    self.emit(
+                        "GetLength",
+                        vec![("String".into(), self.val_input(&basev, "String"))],
+                        vec![("Length".into(), out.clone())],
+                        chain,
+                    );
+                }
+                return Val::Var(out);
+            }
+            ("find", [pattern]) => {
+                let pv = self.expr(pattern, chain, None);
+                self.emit(
+                    "FindString",
+                    vec![
+                        ("String".into(), self.val_input(&basev, "String")),
+                        ("Pattern".into(), self.val_input(&pv, "String")),
+                    ],
+                    vec![("Result".into(), out.clone())],
+                    chain,
+                );
+                return Val::Var(out);
+            }
             ("FindFirstChild", [name]) => {
                 let nv = self.expr(name, chain, None);
                 self.emit(
@@ -4754,6 +4839,12 @@ pub(crate) fn eq_expr(&self, e: &Expr) -> String {
         bind: Option<&str>,
     ) -> Val {
         let out = bind.map(|s| s.to_string()).unwrap_or_else(|| self.temp());
+        // [fix] consume the ExprStmt true-discard mark HERE, before any
+        // argument expressions are evaluated. It used to be taken at each
+        // ExecuteFunction arm after arg eval, so a nested call inside the
+        // argument list (f(g(1))) inherited count-0 and its return was
+        // dropped - the outer call then read a nil parameter.
+        let discard = std::mem::take(&mut self.exprstmt_discard);
         // RS unsupported deny-list (user-confirmed items only)
         let callee: Option<String> = match f {
             Expr::Index(b, k) => match (&**b, &**k) {
@@ -5109,6 +5200,21 @@ pub(crate) fn eq_expr(&self, e: &Expr) -> String {
                         );
                         return Val::Lit(LitVal::Bool(true));
                     }
+                    // Roblox print separates args with a TAB (print(1, 2)
+                    // renders "1<TAB>2"). Interleave a literal tab between
+                    // parts so the Concatenate chain preserves the spacing -
+                    // previously the args were glued together ("12").
+                    if parts.len() > 1 {
+                        let mut with_sep: Vec<PrintPart> =
+                            Vec::with_capacity(parts.len() * 2 - 1);
+                        for (idx, p) in parts.into_iter().enumerate() {
+                            if idx > 0 {
+                                with_sep.push(PrintPart::Str(InputVal::Implicit("\t".into())));
+                            }
+                            with_sep.push(p);
+                        }
+                        parts = with_sep;
+                    }
                     if parts.len() == 1 {
                         let only = match &parts[0] {
                             PrintPart::Str(iv) | PrintPart::Num(iv) => iv.clone(),
@@ -5276,7 +5382,6 @@ pub(crate) fn eq_expr(&self, e: &Expr) -> String {
                             // used -> count 1 + named TUPLEPARAM output;
                             // discarded -> count 0, NO tuple outputs (a
                             // binding name in the count slot breaks RS).
-                            let discard = std::mem::take(&mut self.exprstmt_discard);
                             let outs = if discard {
                                 // [patch9] true discard (T8): count 0
                                 vec![("TUPLE_ReturnedValues".into(), "0".into())]
@@ -5327,7 +5432,6 @@ pub(crate) fn eq_expr(&self, e: &Expr) -> String {
                             return if discard { Val::Lit(LitVal::Nil) } else { Val::Var(out) };
                         }
                         let param_inputs = self.tuple_param_inputs(args, chain);
-                        let discard = std::mem::take(&mut self.exprstmt_discard);
                         let outs = if discard {
                             // [patch9] true discard (T8): count 0
                             vec![("TUPLE_ReturnedValues".into(), "0".into())]
@@ -5832,7 +5936,6 @@ pub(crate) fn eq_expr(&self, e: &Expr) -> String {
                     let inner_name = format!("{}Inner", n);
                     if let Some(fb) = self.lookup(&inner_name) {
                         let param_inputs = self.tuple_param_inputs(args, chain);
-                        let discard = std::mem::take(&mut self.exprstmt_discard);
                         let outs = if discard {
                             // [patch9] true discard (T8): count 0
                             vec![("TUPLE_ReturnedValues".into(), "0".into())]
@@ -5913,14 +6016,23 @@ pub(crate) fn eq_expr(&self, e: &Expr) -> String {
         // one SetTableValue each below. patch21's positional-only ban
         // and v20's blanket gate are both superseded.
         let mut safe: Vec<String> = Vec::with_capacity(fields.len());
+        // Lua semantics: the array part counts ONLY positional fields -
+        // `{"x" = 1, 9}` stores 9 at [1], not [2]. Track the positional
+        // slot separately from the field index so mixed constructors
+        // keep the run-7 shape without shifting entries after a
+        // named/bracketed one.
+        let mut pos_slot = 0usize;
         let mut deferred: Vec<(usize, &TableField)> = Vec::new();
-        for (i, f) in fields.iter().enumerate() {
+        for f in fields.iter() {
             let piece = match f {
                 // positional numbers keep the run-7 tested shape
-                TableField::Pos(e) => match e {
-                    Expr::Number(n) => Some(format!("[{}] = {}", i + 1, n)),
-                    _ => None,
-                },
+                TableField::Pos(e) => {
+                    pos_slot += 1;
+                    match e {
+                        Expr::Number(n) => Some(format!("[{}] = {}", pos_slot, n)),
+                        _ => None,
+                    }
+                }
                 TableField::Named(k, e) => match (lua_eq_str(k), lua_eq_atom(e)) {
                     (Some(ks), Some(vs)) => Some(format!("[{}] = {}", ks, vs)),
                     _ => None,
@@ -5932,7 +6044,7 @@ pub(crate) fn eq_expr(&self, e: &Expr) -> String {
             };
             match piece {
                 Some(p) => safe.push(p),
-                None => deferred.push((i, f)),
+                None => deferred.push((pos_slot, f)),
             }
         }
         if deferred.is_empty() {
@@ -6011,7 +6123,7 @@ pub(crate) fn eq_expr(&self, e: &Expr) -> String {
                             ("Table".into(), self.val_input(&Val::Var(out.clone()), "Table")),
                             (
                                 "Key".into(),
-                                InputVal::Literal { value: hexs((i + 1) as f64), vtype: "Number".into() },
+                                InputVal::Literal { value: hexs(i as f64), vtype: "Number".into() },
                             ),
                             ("Value".into(), self.val_input(&v, "Any")),
                         ],
